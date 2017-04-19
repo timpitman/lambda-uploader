@@ -23,7 +23,9 @@ import traceback
 import lambda_uploader
 
 from os import getcwd, path, getenv
-from lambda_uploader import package, config, uploader
+from lambda_uploader import package, config, uploader, subscribers
+from boto3 import __version__ as boto3_version
+from botocore import __version__ as botocore_version
 
 LOG = logging.getLogger(__name__)
 
@@ -32,6 +34,11 @@ CHECK = '\xe2\x9c\x85'
 INTERROBANG = '\xe2\x81\x89\xef\xb8\x8f'
 RED_X = '\xe2\x9d\x8c'
 LAMBDA = '\xce\xbb'
+TRACEBACK_MESSAGE = """%s Unexpected error. Please report this traceback.
+Uploader: %s
+Botocore: %s
+Boto3: %s
+"""
 
 
 # Used for stdout for shell
@@ -47,7 +54,11 @@ def _print(txt):
 def _execute(args):
     pth = path.abspath(args.function_dir)
 
-    cfg = config.Config(pth, args.config, role=args.role)
+    cfg = config.Config(pth, args.config, role=args.role,
+                        variables=args.variables)
+
+    if args.s3_bucket:
+        cfg.set_s3(args.s3_bucket, args.s3_key)
 
     if args.no_virtualenv:
         # specified flag to omit entirely
@@ -59,15 +70,18 @@ def _execute(args):
         # build and include virtualenv, the default
         venv = None
 
-    _print('Building Package')
-    requirements = cfg.requirements
-    if args.requirements:
-        requirements = path.abspath(args.requirements)
-    extra_files = cfg.extra_files
-    if args.extra_files:
-        extra_files = args.extra_files
-    pkg = package.build_package(pth, requirements,
-                                venv, cfg.ignore, extra_files)
+    if args.no_build:
+        pkg = package.create_package(pth)
+    else:
+        _print('Building Package')
+        requirements = cfg.requirements
+        if args.requirements:
+            requirements = path.abspath(args.requirements)
+        extra_files = cfg.extra_files
+        if args.extra_files:
+            extra_files = args.extra_files
+        pkg = package.build_package(pth, requirements,
+                                    venv, cfg.ignore, extra_files)
 
     if not args.no_clean:
         pkg.clean_workspace()
@@ -90,6 +104,10 @@ def _execute(args):
         if create_alias:
             upldr.alias()
 
+        if cfg.subscription:
+            _print('Creating subscription')
+            subscribers.create_subscriptions(cfg, args.profile)
+
         pkg.clean_zipfile()
 
     _print('Fin')
@@ -97,16 +115,17 @@ def _execute(args):
 
 def main(arv=None):
     """lambda-uploader command line interface."""
-    # Check for Python 2.7 (required for Lambda)
-    if not (sys.version_info[0] == 2 and sys.version_info[1] == 7):
-        raise RuntimeError('lambda-uploader requires Python 2.7')
+    # Check for Python 2.7 or later
+    if sys.version_info[0] < 3 and not sys.version_info[1] == 7:
+        raise RuntimeError('lambda-uploader requires Python 2.7 or later')
 
     import argparse
 
     parser = argparse.ArgumentParser(
-            version=('version %s' % lambda_uploader.__version__),
             description='Simple way to create and upload python lambda jobs')
 
+    parser.add_argument('--version', '-v', action='version',
+                        version=lambda_uploader.__version__)
     parser.add_argument('--no-upload', dest='no_upload',
                         action='store_const', help='dont upload the zipfile',
                         const=True)
@@ -133,6 +152,8 @@ def main(arv=None):
                         default=getenv('LAMBDA_UPLOADER_ROLE'),
                         help=('IAM role to assign the lambda function, '
                               'can be set with $LAMBDA_UPLOADER_ROLE'))
+    parser.add_argument('--variables', dest='variables',
+                        help='add environment variables')
     parser.add_argument('--profile', dest='profile',
                         help='specify AWS cli profile')
     parser.add_argument('--requirements', '-r', dest='requirements',
@@ -142,10 +163,19 @@ def main(arv=None):
                         default=None, help=alias_help)
     parser.add_argument('--alias-description', '-m', dest='alias_description',
                         default=None, help='alias description')
-    parser.add_argument('--config', '-c', help='Overrides lambda.json',
+    parser.add_argument('--s3-bucket', '-s', dest='s3_bucket',
+                        help='S3 bucket to store the lambda function in',
                         default=None)
+    parser.add_argument('--s3-key', '-k', dest='s3_key',
+                        help='Key name of the lambda function s3 object',
+                        default=None)
+    parser.add_argument('--config', '-c', help='Overrides lambda.json',
+                        default='lambda.json')
     parser.add_argument('function_dir', default=getcwd(), nargs='?',
                         help='lambda function directory')
+    parser.add_argument('--no-build', dest='no_build',
+                        action='store_const', help='dont build the sourcecode',
+                        const=True)
 
     verbose = parser.add_mutually_exclusive_group()
     verbose.add_argument('-V', dest='loglevel', action='store_const',
@@ -162,8 +192,10 @@ def main(arv=None):
     try:
         _execute(args)
     except Exception:
-        print('%s Unexpected error. Please report this traceback.'
-              % INTERROBANG, file=sys.stderr)
+        print(TRACEBACK_MESSAGE
+              % (INTERROBANG, lambda_uploader.__version__,
+                 boto3_version, botocore_version),
+              file=sys.stderr)
 
         traceback.print_exc()
         sys.stderr.flush()

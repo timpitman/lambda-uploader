@@ -1,8 +1,35 @@
 lambda-uploader CHANGELOG
 =========================
 
-1.0.0(Unreleased)
------------------
+1.1.0
+-----
+- Runtime is now a configurable option
+- Exclusion regexes now quoted properly
+- Added support for Lambda environment variables
+- Boto3 version dependency updated to support Step functions
+
+1.0.3
+-----
+- Fixed issue in copy trees attempting to make a parent directory even
+  if it already exists.
+- Fixed issue in configuration verify where the object was not actually
+  checked.
+
+1.0.2
+-----
+- Bumped the boto3 version to 1.4.0
+
+1.0.1
+-----
+- Fixed exceptions caused by not handling find_executable() returning
+  None
+- No longer raising exception in shell if Python version is Python 3
+- Fixed issue with default requirements file not being used if it
+  exists in the project directory
+- Ignore list now applies to extra files as well
+
+1.0.0
+-----
 - Warn if the lambda package is over the current AWS max size of 50MB
 - Add --extra-file flag for adding arbitrary file(s) outside of the
   project directory.
@@ -14,6 +41,8 @@ lambda-uploader CHANGELOG
   variables in favor of calling setter methods.
 - Add -c shorthand to the --config flag
 - Fixed the ignores to match against paths relative to the source dir
+- Added support for placing your lambda functions in specific VPC 
+  subnets and security groups
 
 0.5.1
 -----

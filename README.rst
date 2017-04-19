@@ -27,11 +27,21 @@ Configuration File
 ~~~~~~~~~~~~~~~~~~
 
 The lambda uploader expects a directory with, at a minimum, your lambda
-function and a lambda.json file. It is not necessary to set requirements
-in your config file since the lambda uploader will also check for and
-use a requirements.txt file.
+function and a ``lambda.json`` file. It is not necessary to set
+requirements in your config file since the lambda uploader will also
+check for and use a requirements.txt file.
 
-Example lambda.json file:
+Please note that you can leave the ``vpc`` object out of your config if
+you want your lambda function to use your default VPC and subnets. If
+you wish to use your lambda function inside a specific VPC, make sure
+you set up the role correctly to allow this.
+
+Note also the ``ignore`` entry is an array of regular expression strings
+used to match against the relative paths - be careful to quote
+accordingly. For example, a traditional ``*.txt`` "glob" is matched by
+the JSON string: ``".*\\.txt$"`` (or just ``"\\.txt$"``).
+
+Example ``lambda.json`` file:
 
 .. code:: json
 
@@ -39,16 +49,25 @@ Example lambda.json file:
       "name": "myFunction",
       "description": "It does things",
       "region": "us-east-1",
+      "runtime": "python2.7",
       "handler": "function.lambda_handler",
       "role": "arn:aws:iam::00000000000:role/lambda_basic_execution",
       "requirements": ["pygithub"],
       "ignore": [
-        "circle.yml",
-        ".git",
-        "/*.pyc"
+        "circle\\.yml$",
+        "\\.git$",
+        "/.*\\.pyc$"
       ],
       "timeout": 30,
-      "memory": 512
+      "memory": 512,
+      "vpc": {
+        "subnets": [
+          "subnet-00000000"
+        ],
+        "security_groups": [
+          "sg-00000000"
+        ]
+      }
     }
 
 Command Line Usage
@@ -81,7 +100,8 @@ To omit using a virtualenv use the ``--no-virtualenv`` parameter.
 
     lambda-uploader --no-virtualenv
 
-To inject any other additional files, use the ``--extra-file EXTRA_FILE`` parameter.
+To inject any other additional files, use the
+``--extra-file EXTRA_FILE`` parameter.
 
 .. code:: shell
 
@@ -109,3 +129,11 @@ alias-description is not provided.
 .. code:: shell
 
     lambda-uploader --alias myAlias --alias-description 'My alias description' ./myfunc
+
+If you would prefer to build the package manually and just upload it
+using uploader you can ignore the build. This will upload
+``lambda_function.zip`` file.
+
+.. code:: shell
+
+    lambda-uploader --no-build

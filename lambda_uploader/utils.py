@@ -21,15 +21,18 @@ import re
 LOG = logging.getLogger(__name__)
 
 
-def copy_tree(src, dest, ignore=[], include_parent=False):
+def copy_tree(src, dest, ignore=None, include_parent=False):
+    ignore = ignore or []
     if os.path.isfile(src):
         raise Exception('Cannot use copy_tree with a file as the src')
 
     LOG.info('Copying source files')
     if include_parent:
         # if src is foo, make dest/foo and copy files there
-        nested_dest = os.path.join(dest, os.path.basename(src))
-        os.makedirs(nested_dest)
+        nested_dest = os.path.normpath(
+                os.path.join(dest, os.path.basename(src)))
+        if not os.path.isdir(nested_dest):
+            os.makedirs(nested_dest)
     else:
         nested_dest = dest
 
@@ -48,12 +51,18 @@ def copy_tree(src, dest, ignore=[], include_parent=False):
                 os.makedirs(pkg_path)
 
             LOG.debug("Copying %s to %s" % (path, pkg_path))
-            shutil.copy(path, pkg_path)
+            if os.path.islink(path):
+                linkto = os.readlink(path)
+                os.symlink(linkto.replace(src, dest, 1),
+                           os.path.join(pkg_path, filename))
+            else:
+                shutil.copy(path, pkg_path)
 
 
 # Iterate through every item in ignore
 # and check for matches in the path
-def _ignore_file(path, ignore=[]):
+def _ignore_file(path, ignore=None):
+    ignore = ignore or []
     if not ignore:
         return False
     for ign in ignore:

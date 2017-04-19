@@ -17,17 +17,27 @@ import shutil
 import zipfile
 import logging
 import sys
+import re
 
 from subprocess import Popen, PIPE
 from lambda_uploader import utils
+from distutils.spawn import find_executable
+
+# Python 2/3 compatibility
+try:
+    basestring
+except NameError:
+    basestring = str
+
 
 LOG = logging.getLogger(__name__)
 TEMP_WORKSPACE_NAME = ".lambda_uploader_temp"
 ZIPFILE_NAME = 'lambda_function.zip'
 
 
-def build_package(path, requirements, virtualenv=None, ignore=[],
-                  extra_files=[], zipfile_name=ZIPFILE_NAME):
+def build_package(path, requires, virtualenv=None, ignore=None,
+                  extra_files=None, zipfile_name=ZIPFILE_NAME):
+    '''Builds the zip file and creates the package with it'''
     pkg = Package(path, zipfile_name)
 
     if extra_files:
@@ -35,9 +45,15 @@ def build_package(path, requirements, virtualenv=None, ignore=[],
             pkg.extra_file(fil)
     if virtualenv is not None:
         pkg.virtualenv(virtualenv)
-    pkg.requirements(requirements)
+    pkg.requirements(requires)
     pkg.build(ignore)
 
+    return pkg
+
+
+def create_package(path, zipfile_name=ZIPFILE_NAME):
+    '''Creates the package with already existing zip file'''
+    pkg = Package(path, zipfile_name)
     return pkg
 
 
@@ -54,7 +70,7 @@ class Package(object):
         self._requirements_file = os.path.join(self._path, "requirements.txt")
         self._extra_files = []
 
-    def build(self, ignore=[]):
+    def build(self, ignore=None):
         '''Calls all necessary methods to build the Lambda Package'''
         self._prepare_workspace()
         self.install_dependencies()
@@ -70,25 +86,27 @@ class Package(object):
         if os.path.isfile(self.zip_file):
             os.remove(self.zip_file)
 
-    def requirements(self, requirements):
+    def requirements(self, requires):
         '''
         Sets the requirements for the package.
 
         It will take either a valid path to a requirements file or
         a list of requirements.
         '''
-        if requirements:
-            if isinstance(requirements, str) and \
-               os.path.isfile(os.path.abspath(requirements)):
-                self._requirements_file = os.path.abspath(requirements)
-                self._requirements = None
+        if requires:
+            if isinstance(requires, basestring) and \
+               os.path.isfile(os.path.abspath(requires)):
+                self._requirements_file = os.path.abspath(requires)
             else:
-                if isinstance(self._requirements, str):
-                    requirements = requirements.split()
+                if isinstance(self._requirements, basestring):
+                    requires = requires.split()
                 self._requirements_file = None
-                self._requirements = requirements
+                self._requirements = requires
         else:
-            self._requirements, self._requirements_file = None
+            # If the default requirements file is found use that
+            if os.path.isfile(self._requirements_file):
+                return
+            self._requirements, self._requirements_file = None, None
 
     def virtualenv(self, virtualenv):
         '''
@@ -124,13 +142,12 @@ class Package(object):
             LOG.info('Skip Virtualenv set ... nothing to do')
             return
 
-        requirements_exist = \
-            self._requirements or os.path.isfile(self._requirements_file)
-        if self._virtualenv is None and requirements_exist:
+        has_reqs = _isfile(self._requirements_file) or self._requirements
+        if self._virtualenv is None and has_reqs:
             LOG.info('Building new virtualenv and installing requirements')
             self._build_new_virtualenv()
             self._install_requirements()
-        elif self._virtualenv is None and not requirements_exist:
+        elif self._virtualenv is None and not has_reqs:
             LOG.info('No requirements found, so no virtualenv will be made')
             self._pkg_venv = False
         else:
@@ -154,8 +171,8 @@ class Package(object):
             if sys.platform == 'win32' or sys.platform == 'cygwin':
                 self._venv_pip = 'Scripts\pip.exe'
 
-            proc = Popen(["virtualenv", self._pkg_venv],
-                         stdout=PIPE, stderr=PIPE)
+            proc = Popen(["virtualenv", "-p", _python_executable(),
+                          self._pkg_venv], stdout=PIPE, stderr=PIPE)
             stdout, stderr = proc.communicate()
             LOG.debug("Virtualenv stdout: %s" % stdout)
             LOG.debug("Virtualenv stderr: %s" % stderr)
@@ -182,7 +199,7 @@ class Package(object):
             cmd = [os.path.join(self._pkg_venv, self._venv_pip),
                    'install'] + self._requirements
 
-        elif os.path.isfile(self._requirements_file):
+        elif _isfile(self._requirements_file):
             # Pip install
             LOG.debug("Installing requirements from requirements.txt file")
             cmd = [os.path.join(self._pkg_venv, self._venv_pip),
@@ -198,7 +215,7 @@ class Package(object):
             if prc.returncode is not 0:
                 raise Exception('pip returned unsuccessfully')
 
-    def package(self, ignore=[]):
+    def package(self, ignore=None):
         """
         Create a zip file of the lambda script and its dependencies.
 
@@ -207,6 +224,7 @@ class Package(object):
             those files when creating the zip file. The paths to be matched are
             local to the source root.
         """
+        ignore = ignore or []
         package = os.path.join(self._temp_workspace, 'lambda_package')
 
         # Copy site packages into package base
@@ -226,17 +244,19 @@ class Package(object):
                 LOG.info('Copying lib64 site packages')
                 utils.copy_tree(lib64_path, package)
 
+        # Append the temp workspace to the ignore list:
+        ignore.append(r"^%s/.*" % re.escape(TEMP_WORKSPACE_NAME))
+        utils.copy_tree(self._path, package, ignore)
+
+        # Add extra files
         for p in self._extra_files:
             LOG.info('Copying extra %s into package' % p)
-            ignore += ["%s" % p]
+            ignore.append(re.escape(p))
             if os.path.isdir(p):
-                utils.copy_tree(p, package, include_parent=True)
+                utils.copy_tree(p, package, ignore=ignore, include_parent=True)
             else:
                 shutil.copy(p, package)
 
-        # Append the temp workspace to the ignore list:
-        ignore += ["^%s/*" % TEMP_WORKSPACE_NAME]
-        utils.copy_tree(self._path, package, ignore)
         self._create_zip(package)
 
     def _create_zip(self, src):
@@ -252,3 +272,21 @@ class Package(object):
 
                 zf.write(absname, arcname)
         zf.close()
+
+
+def _isfile(path):
+    """Variant of os.path.isfile that is somewhat type-resilient."""
+    if not path:
+        return False
+    return os.path.isfile(path)
+
+
+def _python_executable():
+        python_exe = find_executable('python2')
+        if not python_exe:
+            python_exe = find_executable('python')
+
+        if not python_exe:
+            raise Exception('Unable to locate python executable')
+
+        return python_exe
